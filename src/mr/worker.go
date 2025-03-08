@@ -26,6 +26,9 @@ func (a ByKey) Len() int           { return len(a) }
 func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
+var fileMutex sync.Mutex
+
+
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
 func ihash(key string) int {
@@ -172,7 +175,7 @@ func (ls *LocalState) pingCoordinator() {
 func (ls *LocalState) getTask(task *Task) bool {
 	args := WorkerState{}
 	ok := call("Coordinator.GetTask", &args, task)
-	if ok == true && task != nil {
+	if ok == true && task.filename!= "" {
 		ls.state = "busy"
 		return true
 	} else {
@@ -204,7 +207,6 @@ func (ls *LocalState) doJob(localtask *Task,
 		}
 		defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 
-		
 
 		content, err := io.ReadAll(file)
 		if err != nil {
@@ -231,12 +233,21 @@ func (ls *LocalState) doJob(localtask *Task,
 
 		for i := 0; i < nReduce; i++ {
 			oname := fmt.Sprintf("mr-out-%d", i)
-			ofile, _ := os.Create(oname)
+
+			fileMutex.Lock()
+			ofile, err := os.OpenFile(oname,os.O_APPEND|os.O_CREATE|os.O_WRONLY,0644)
+			if err != nil {
+				log.Printf("Failed to open file %s: %v\n", oname, err)
+				fileMutex.Unlock() // 解锁
+				return false
+			}
+	
 
 			for _, kv := range reduce_tasks[i] {
 				fmt.Fprintf(ofile, "%v %v\n", kv.Key, kv.Value)
 			}
 			ofile.Close()
+			fileMutex.Unlock()
 		}
 		return true
 
@@ -267,9 +278,16 @@ func (ls *LocalState) doJob(localtask *Task,
 	
 }
 
-func (ls *LocalState) working(mapf func(string, string) []KeyValue,reducef func(string, []string) string) {
+function1 := func(string , string) []KeyValue
+function2 := func(string, []string) string
+func (ls *LocalState) working(
+	mapf func(string , string) []KeyValue, 
+	reducef func(string, []string) string,
+	) {
+
 	task := Task{}
 	for {
+		time.Sleep(2 * time.Second)
 		ls.mu.Lock()
 		if ls.state == "online" {
 			ok := ls.getTask(&task)
@@ -277,13 +295,49 @@ func (ls *LocalState) working(mapf func(string, string) []KeyValue,reducef func(
 				log.Printf("worker %d failed to get task\n", ls.id)
 			} else {
 				log.Printf("worker %d got task %s\n", ls.id, task.filename)
+				ls.state = "busy"
 			}
 		}
 		ls.mu.Unlock()
+		if task.filename != "" {
+			continue
+		}
 
-		time.Sleep(2 * time.Second)
+		restult := ls.doJob(&task, mapf, reducef)
+		if restult == false{
+			log.Printf("worker %d failed to do job %s\n", ls.id, task.filename)
+			ls.mu.Lock()
+			ls.state = "online"
+			ls.mu.Unlock()
+		}else{
+			log.Printf("worker %d finished job %s\n", ls.id, task.filename)
+			ls.mu.Lock()
+			ls.state = "online"
+			ls.mu.Unlock()
+			for{
+				doneOk := reportDone(ls)
+				if doneOk {
+					break
+				} else {
+					time.Sleep(1*time.Second)
+			}
+			}
+		}
 	}
 }
+
+
+func reportDone (ls *LocalState) bool{
+	ws := ls.Local2Worker()
+	result := false
+	ok := call("Coordinator.TaskDone", &ws, &result)
+	if ok {
+		return result
+	} else {
+		return false
+	}
+}
+
 
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.

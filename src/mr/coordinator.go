@@ -236,7 +236,7 @@ func (c *Coordinator) GetTask(args *WorkerState, task *Task) error {
 
 	}
 	if flag == false {
-		task = nil
+		*task = Task{}
 	}
 
 	return nil
