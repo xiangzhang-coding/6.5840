@@ -8,7 +8,9 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -27,7 +29,6 @@ func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 var fileMutex sync.Mutex
-
 
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -175,7 +176,7 @@ func (ls *LocalState) pingCoordinator() {
 func (ls *LocalState) getTask(task *Task) bool {
 	args := WorkerState{}
 	ok := call("Coordinator.GetTask", &args, task)
-	if ok == true && task.filename!= "" {
+	if ok == true && task.filename != "" {
 		ls.state = "busy"
 		return true
 	} else {
@@ -183,17 +184,28 @@ func (ls *LocalState) getTask(task *Task) bool {
 	}
 }
 
+func getReduceID(task *Task) int {
+	var result int
+	ok := call("Coordinator.GetReduceID", &task, &result)
+	if ok {
+		return result
+	} else {
+		log.Println("coordinator not responding... Can't get reduce id")
+		return result
+	}
+}
+
 func (ls *LocalState) doJob(localtask *Task,
 	mapf func(string, string) []KeyValue, reducef func(string, []string) string) bool {
-	if localtask.filename == "shutdown"{
+	if localtask.filename == "shutdown" {
 		log.Println("All jobs have been done, cooordinator will shutdown soon...")
-		log.println("worker will exit...")
+		log.Println("worker will exit...")
 		os.Exit(0)
 	}
 	if localtask.work_type == "map" {
 		intermediate := []KeyValue{}
 		filename := localtask.filename
-		file, err := os.OpenFile(filename,os.O_RDONLY,0644)
+		file, err := os.OpenFile(filename, os.O_RDONLY, 0644)
 		if err != nil {
 			log.Printf("worker %d failed to open file %s\n", ls.id, filename)
 			return false
@@ -207,13 +219,12 @@ func (ls *LocalState) doJob(localtask *Task,
 		}
 		defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 
-
 		content, err := io.ReadAll(file)
 		if err != nil {
 			log.Printf("cannot read %v\n", filename)
 			return false
 		}
-		
+
 		kva := mapf(filename, string(content))
 		intermediate = append(intermediate, kva...)
 
@@ -235,13 +246,12 @@ func (ls *LocalState) doJob(localtask *Task,
 			oname := fmt.Sprintf("mr-out-%d", i)
 
 			fileMutex.Lock()
-			ofile, err := os.OpenFile(oname,os.O_APPEND|os.O_CREATE|os.O_WRONLY,0644)
+			ofile, err := os.OpenFile(oname, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 			if err != nil {
 				log.Printf("Failed to open file %s: %v\n", oname, err)
 				fileMutex.Unlock() // 解锁
 				return false
 			}
-	
 
 			for _, kv := range reduce_tasks[i] {
 				fmt.Fprintf(ofile, "%v %v\n", kv.Key, kv.Value)
@@ -251,39 +261,91 @@ func (ls *LocalState) doJob(localtask *Task,
 		}
 		return true
 
-	} 
-		// work_type == "reduce"
+	}
+	// work_type == "reduce"
+	var reduceID int = -1
 	if localtask.work_type == "reduce" {
-		filename := localtask.filename
-		file, err := os.Open(filename)
+		reduceID = getReduceID(localtask)
+		if reduceID == -1 {
+			log.Fatal("worker %d failed to get reduce id\n", ls.id)
+		}
+		filename := fmt.Sprintf("mr-out-%d", reduceID)
+
+		file, err := os.OpenFile(filename, os.O_RDONLY, 0644)
 		if err != nil {
 			log.Printf("worker %d failed to open file %s\n", ls.id, filename)
 			return false
 		}
+		defer file.Close()
+		// for unix/macos or linux not windows
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
+		if err != nil {
+			log.Printf("worker %d failed to lock file %s: %v\n", ls.id, filename, err)
+			return false
+		}
+		defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 		content, err := io.ReadAll(file)
 		if err != nil {
 			log.Printf("cannot read %v\n", filename)
 			return false
 		}
-		file.Close()
-		keys := make([]string, 0)
-		values := make([]string, 0)
+
+		// sort the content by key
+
+		intermediate := make([]KeyValue, 0)
+		pair := KeyValue{}
 		for _, line := range strings.Split(string(content), "\n") {
 			if line == "" {
 				continue
 			}
 			fields := strings.Split(line, " ")
+
 			if len(fields) != 2 {
 				log.Printf("worker %d failed to parse %s\n", ls.id, filename)
-	
+
+			}
+			pair.Key = fields[0]
+			pair.Value = fields[1]
+			intermediate = append(intermediate, pair)
+		}
+		sort.Sort(ByKey(intermediate))
+
+		oname := fmt.Sprintf("mr-out-%d", reduceID)
+		fileMutex.Lock()
+		//overwrite the output file
+		ofile, err := os.OpenFile(oname, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			log.Printf("Failed to open file %s: %v\n", oname, err)
+			fileMutex.Unlock() // 解锁
+			return false
+		}
+
+		i := 0
+		for i < len(intermediate) {
+			j := i + 1
+			for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+				j++
+			}
+			values := []string{}
+			for k := i; k < j; k++ {
+				values = append(values, intermediate[k].Value)
+			}
+			output := reducef(intermediate[i].Key, values)
+
+			// this is the correct format for each line of Reduce output.
+			fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+
+			i = j
+		}
+
+		ofile.Close()
+		fileMutex.Unlock()
+		return true
+	}
+	return false
 }
 
-function1 := func(string , string) []KeyValue
-function2 := func(string, []string) string
-func (ls *LocalState) working(
-	mapf func(string , string) []KeyValue, 
-	reducef func(string, []string) string,
-	) {
+func (ls *LocalState) working(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 
 	task := Task{}
 	for {
@@ -304,30 +366,29 @@ func (ls *LocalState) working(
 		}
 
 		restult := ls.doJob(&task, mapf, reducef)
-		if restult == false{
+		if !restult {
 			log.Printf("worker %d failed to do job %s\n", ls.id, task.filename)
 			ls.mu.Lock()
 			ls.state = "online"
 			ls.mu.Unlock()
-		}else{
+		} else {
 			log.Printf("worker %d finished job %s\n", ls.id, task.filename)
 			ls.mu.Lock()
 			ls.state = "online"
 			ls.mu.Unlock()
-			for{
+			for {
 				doneOk := reportDone(ls)
 				if doneOk {
 					break
 				} else {
-					time.Sleep(1*time.Second)
-			}
+					time.Sleep(1 * time.Second)
+				}
 			}
 		}
 	}
 }
 
-
-func reportDone (ls *LocalState) bool{
+func reportDone(ls *LocalState) bool {
 	ws := ls.Local2Worker()
 	result := false
 	ok := call("Coordinator.TaskDone", &ws, &result)
@@ -337,7 +398,6 @@ func reportDone (ls *LocalState) bool{
 		return false
 	}
 }
-
 
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.

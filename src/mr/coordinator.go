@@ -122,6 +122,12 @@ func (c *Coordinator) checkTask() {
 			if c.tasklist[i].state == "doing" {
 				if time.Now().Sub(c.tasklist[i].startWorkTime) > time.Second*10 {
 					c.tasklist[i].state = "waiting"
+					for j := 0; j < len(c.reduceID); j++ {
+						if c.reduceID[j] == c.tasklist[i].worker_id {
+							c.reduceID[j] = -1
+							break
+						}
+					}
 					c.tasklist[i].worker_id = -1
 					waitingCounter++
 				} else {
@@ -182,6 +188,25 @@ func (c *Coordinator) Ping(args *WorkerState, reply *WorkerState) error {
 	return nil
 }
 
+func (c *Coordinator) GetReduceID(args *Task, reply *int) error {
+	worker_id := (*args).worker_id
+	var flag bool = false
+	c.mu.Lock()
+	for i := 0; i < len(c.reduceID); i++ {
+		if c.reduceID[i] == worker_id {
+			flag = true
+			*reply = i
+			break
+		}
+	}
+	c.mu.Unlock()
+	if flag == false {
+		*reply = -1
+	}
+	return nil
+
+}
+
 func (c *Coordinator) GetTask(args *WorkerState, task *Task) error {
 	worker_id := (*args).id
 	worker_state := (*args).state
@@ -198,7 +223,14 @@ func (c *Coordinator) GetTask(args *WorkerState, task *Task) error {
 					*task = c.tasklist[i]
 					flag = true
 					alljobdone = false
-					c.reduceID[i] = worker_id
+
+					for k := 0; k < len(c.reduceID); k++ {
+						if c.reduceID[k] == -1 {
+							c.reduceID[k] = worker_id
+							break
+						}
+					}
+
 					for j := 0; j < len(c.workerList); j++ {
 						if c.workerList[j].id == worker_id {
 							c.workerList[j].state = "busy"
@@ -239,30 +271,6 @@ func (c *Coordinator) GetTask(args *WorkerState, task *Task) error {
 		*task = Task{}
 	}
 
-	return nil
-}
-
-func (c *Coordinator) MapJobDone(args *WorkerState, reply *bool) error {
-	worker_id := (*args).id
-	var flag bool = false
-	c.mu.Lock()
-	for i := 0; i < len(c.tasklist); i++ {
-		if c.tasklist[i].worker_id == worker_id && c.tasklist[i].state == "doing" {
-			c.tasklist[i].state = "done"
-			*reply = true
-			flag = true
-			for j := 0; j < len(c.workerList); j++ {
-				if c.workerList[j].id == worker_id {
-					c.workerList[j].state = "online"
-				}
-			}
-			break
-		}
-	}
-	c.mu.Unlock()
-	if flag == false {
-		*reply = false
-	}
 	return nil
 }
 
@@ -389,6 +397,9 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		c.tasklist = append(c.tasklist, tmptask)
 	}
 	c.reduceID = make([]int, nReduce)
+	for i := range c.reduceID {
+		c.reduceID[i] = -1
+	}
 	c.mapDone = false
 
 	// log active workers per 5 minutes
