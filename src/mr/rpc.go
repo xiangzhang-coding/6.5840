@@ -29,7 +29,7 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 type WorkerState struct {
-	id           int
+	ID           int
 	startTime    time.Time
 	state        string // offline online busy, online means idle
 	lastPingTime time.Time

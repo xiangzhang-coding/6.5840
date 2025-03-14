@@ -65,7 +65,7 @@ func (c *Coordinator) CreateWorker(args *WorkerState, reply *WorkerState) error 
 	for ; i < len(c.workersSign); i++ {
 		if c.workersSign[i] == false {
 			c.workersSign[i] = true
-			temp.id = i
+			temp.ID = i
 			c.workerList[i] = temp
 			flag = true
 			break
@@ -73,7 +73,7 @@ func (c *Coordinator) CreateWorker(args *WorkerState, reply *WorkerState) error 
 	}
 	if flag == false {
 		c.workersSign = append(c.workersSign, true)
-		temp.id = i
+		temp.ID = i
 		c.workerList = append(c.workerList, temp)
 		flag = true
 	}
@@ -160,19 +160,19 @@ func (c *Coordinator) checkTask() {
 
 // todo  if long time no ping, delete the state in workersSign
 func (c *Coordinator) Ping(args *WorkerState, reply *WorkerState) error {
-	id := (*args).id
+	id := (*args).ID
 	//todo check the id is valid.
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var flag bool = false
 	temp := WorkerState{}
 	for _, worker := range c.workerList {
-		if worker.id == id {
+		if worker.ID == id {
 			worker.lastPingTime = time.Now()
 			if worker.state == "offline" {
 				worker.state = "online"
 			}
-			temp.id = worker.id
+			temp.ID = worker.ID
 			temp.startTime = worker.startTime
 			temp.state = worker.state
 			temp.lastPingTime = worker.lastPingTime
@@ -208,7 +208,7 @@ func (c *Coordinator) GetReduceID(args *Task, reply *int) error {
 }
 
 func (c *Coordinator) GetTask(args *WorkerState, task *Task) error {
-	worker_id := (*args).id
+	worker_id := (*args).ID
 	worker_state := (*args).state
 	var flag bool = false
 	var alljobdone bool = true
@@ -232,7 +232,7 @@ func (c *Coordinator) GetTask(args *WorkerState, task *Task) error {
 					}
 
 					for j := 0; j < len(c.workerList); j++ {
-						if c.workerList[j].id == worker_id {
+						if c.workerList[j].ID == worker_id {
 							c.workerList[j].state = "busy"
 						}
 					}
@@ -255,7 +255,7 @@ func (c *Coordinator) GetTask(args *WorkerState, task *Task) error {
 					*task = c.tasklist[i]
 					flag = true
 					for j := 0; j < len(c.workerList); j++ {
-						if c.workerList[j].id == worker_id {
+						if c.workerList[j].ID == worker_id {
 							c.workerList[j].state = "busy"
 						}
 					}
@@ -297,7 +297,7 @@ func (c *Coordinator) map2reduce() {
 }
 
 func (c *Coordinator) TaskDone(args *WorkerState, reply *bool) error {
-	worker_id := (*args).id
+	worker_id := (*args).ID
 	worker_state := (*args).state
 	if worker_state != "busy" {
 		*reply = false
@@ -312,7 +312,7 @@ func (c *Coordinator) TaskDone(args *WorkerState, reply *bool) error {
 			*reply = true
 			flag = true
 			for j := 0; j < len(c.workerList); j++ {
-				if c.workerList[j].id == worker_id {
+				if c.workerList[j].ID == worker_id {
 					c.workerList[j].state = "online"
 					break
 				}

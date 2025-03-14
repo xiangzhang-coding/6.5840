@@ -50,7 +50,7 @@ func (ls *LocalState) Local2Worker() WorkerState {
 	ws := WorkerState{}
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	ws.id = ls.id
+	ws.ID = ls.id
 	ws.startTime = ls.startTime
 	ws.state = ls.state
 	ws.lastPingTime = ls.lastPingTime
@@ -60,7 +60,7 @@ func (ls *LocalState) Local2Worker() WorkerState {
 func (ls *LocalState) Worker2Local(ws WorkerState) {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	ls.id = ws.id
+	ls.id = ws.ID
 	ls.startTime = ws.startTime
 	ls.state = ws.state
 	ls.lastPingTime = ws.lastPingTime
